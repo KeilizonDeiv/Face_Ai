@@ -89,3 +89,102 @@ def start_camera():
             'error': str(e)
         }), 500
 
+
+@app.route('/stop_camera', methods=['POST'])
+def stop_camera():
+    """Stop camera feed"""
+    try:
+        video_analyzer.stop_camera()
+        return jsonify({
+            'success': True,
+            'message': 'Camera stopped'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/get_analysis')
+def get_analysis():
+    """Get current analysis data"""
+    global current_analysis
+    
+    # Format response
+    response = {
+        'num_faces': current_analysis['num_faces'],
+        'faces': []
+    }
+    
+    for face in current_analysis.get('faces', []):
+        response['faces'].append({
+            'face_id': face.get('face_id', 0),
+            'dominant_emotion': face.get('dominant_emotion', 'neutral'),
+            'confidence': face.get('confidence', 0),
+            'emotion_scores': face.get('emotion_scores', {})
+        })
+    
+    # Calculate overall emotion distribution
+    if response['num_faces'] > 0:
+        emotion_dist = {}
+        for emotion in ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']:
+            total = sum(face['emotion_scores'].get(emotion, 0) for face in response['faces'])
+            emotion_dist[emotion] = total / response['num_faces']
+        
+        response['emotion_distribution'] = emotion_dist
+    else:
+        response['emotion_distribution'] = {e: 0 for e in ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']}
+    
+    return jsonify(response)
+
+
+@app.route('/capture_snapshot', methods=['POST'])
+def capture_snapshot():
+    """Capture and save current frame"""
+    try:
+        frame, analysis = video_analyzer.get_frame()
+        
+        if frame is None:
+            return jsonify({
+                'success': False,
+                'error': 'No frame available'
+            }), 400
+        
+        # Generate filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'snapshot_{timestamp}.jpg'
+        filepath = os.path.join(RESULTS_FOLDER, filename)
+        
+        # Save frame
+        success = video_analyzer.save_snapshot(frame, filepath)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'filename': filename,
+                'path': f'/static/images/{filename}',
+                'analysis': {
+                    'num_faces': analysis['num_faces'],
+                    'faces': [
+                        {
+                            'emotion': face['dominant_emotion'],
+                            'confidence': face['confidence']
+                        }
+                        for face in analysis.get('faces', [])
+                    ]
+                }
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to save snapshot'
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
