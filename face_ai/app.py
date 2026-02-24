@@ -286,3 +286,20 @@ def get_snapshots():
             'error': str(e)
         }), 500
 
+
+if __name__ == '__main__':
+    print("="*60)
+    print("AI Face Analysis System")
+    print("="*60)
+    print("Features:")
+    print("  ✓ Real-time face detection")
+    print("  ✓ Emotion analysis (7 emotions)")
+    print("  ✓ Multiple face tracking")
+    print("  ✓ Webcam support")
+    print("  ✓ 100% Open-source & Offline")
+    print("="*60)
+    print("\nStarting server...")
+    print("Open http://localhost:5000 in your browser")
+    print("="*60 + "\n")
+    
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
