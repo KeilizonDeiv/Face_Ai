@@ -188,3 +188,101 @@ def capture_snapshot():
         }), 500
 
 
+@app.route('/analyze_image', methods=['POST'])
+def analyze_image():
+    """Analyze uploaded image"""
+    try:
+        if 'image' not in request.files:
+            return jsonify({
+                'success': False,
+                'error': 'No image provided'
+            }), 400
+        
+        file = request.files['image']
+        
+        if file.filename == '':
+            return jsonify({
+                'success': False,
+                'error': 'No file selected'
+            }), 400
+        
+        # Read image
+        file_bytes = np.frombuffer(file.read(), np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid image file'
+            }), 400
+        
+        # Analyze image
+        face_analyzer = FaceAnalyzer()
+        analysis = face_analyzer.analyze_image(image)
+        
+        # Draw annotations
+        annotated_image = face_analyzer.draw_analysis(image, analysis)
+        
+        # Save result
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'analyzed_{timestamp}.jpg'
+        filepath = os.path.join(RESULTS_FOLDER, filename)
+        cv2.imwrite(filepath, annotated_image)
+        
+        return jsonify({
+            'success': True,
+            'result_path': f'/static/images/{filename}',
+            'analysis': {
+                'num_faces': analysis['num_faces'],
+                'faces': [
+                    {
+                        'face_id': face['face_id'],
+                        'emotion': face['dominant_emotion'],
+                        'confidence': face['confidence'],
+                        'emotion_scores': face['emotion_scores']
+                    }
+                    for face in analysis.get('faces', [])
+                ]
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/camera_status')
+def camera_status():
+    """Get camera status"""
+    return jsonify({
+        'is_running': video_analyzer.is_running
+    })
+
+
+@app.route('/get_snapshots')
+def get_snapshots():
+    """Get list of saved snapshots"""
+    try:
+        files = os.listdir(RESULTS_FOLDER)
+        snapshots = [f for f in files if f.startswith('snapshot_') or f.startswith('analyzed_')]
+        snapshots.sort(reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'snapshots': [
+                {
+                    'filename': f,
+                    'path': f'/static/images/{f}',
+                    'timestamp': f.split('_')[1].split('.')[0] if '_' in f else ''
+                }
+                for f in snapshots[:10]  # Last 10 snapshots
+            ]
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
