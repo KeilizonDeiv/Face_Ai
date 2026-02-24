@@ -48,3 +48,44 @@ def generate_frames():
         # Yield frame in multipart format
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+
+@app.route('/')
+def index():
+    """Render main interface"""
+    return render_template('index.html')
+
+
+@app.route('/video_feed')
+def video_feed():
+    """Video streaming route"""
+    return Response(
+        generate_frames(),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+
+@app.route('/start_camera', methods=['POST'])
+def start_camera():
+    """Start camera feed"""
+    try:
+        camera_id = request.json.get('camera_id', 0)
+        success = video_analyzer.start_camera(camera_id)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Camera started successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to start camera'
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
