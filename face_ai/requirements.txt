@@ -1,0 +1,6 @@
+flask==3.0.0
+opencv-python==4.10.0.84
+deepface==0.0.93
+numpy==1.26.2
+tf-keras==2.18.0
+tensorflow==2.18.0
