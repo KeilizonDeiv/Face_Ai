@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Face Analysis System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🎭 AI Face Analysis System</h1>
+            <p class="subtitle">Real-Time Emotion Detection & Face Recognition</p>
+            <div class="tech-badges">
+                <span class="badge">100% Open-Source</span>
+                <span class="badge">No API Required</span>
+                <span class="badge">Works Offline</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-grid">
+            <!-- Left Panel: Video Feed -->
+            <div class="video-section">
+                <div class="card video-card">
+                    <div class="card-header">
+                        <h2>📹 Live Camera Feed</h2>
+                        <div class="status-indicator" id="cameraStatus">
+                            <span class="status-dot offline"></span>
+                            <span class="status-text">Camera Offline</span>
+                        </div>
+                    </div>
+                    
+                    <div class="video-container">
+                        <img id="videoFeed" 
+                             src="/static/images/placeholder.jpg" 
+                             alt="Camera Feed"
+                             onerror="this.src='/static/images/placeholder.jpg'">
+                        <div class="video-overlay" id="noCamera">
+                            <div class="overlay-content">
+                                <div class="overlay-icon">📷</div>
+                                <h3>Camera Not Active</h3>
+                                <p>Click "Start Camera" to begin face analysis</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="video-controls">
+                        <button class="btn btn-primary" id="startBtn" onclick="startCamera()">
+                            <span class="btn-icon">▶</span> Start Camera
+                        </button>
+                        <button class="btn btn-danger" id="stopBtn" onclick="stopCamera()" disabled>
+                            <span class="btn-icon">⏹</span> Stop Camera
+                        </button>
+                        <button class="btn btn-secondary" id="captureBtn" onclick="captureSnapshot()" disabled>
+                            <span class="btn-icon">📸</span> Capture
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Image Upload -->
+                <div class="card">
+                    <h2>📤 Upload Image</h2>
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" id="imageInput" accept="image/*" style="display: none;">
+                        <label for="imageInput" class="upload-label">
+                            <div class="upload-icon">🖼️</div>
+                            <div>Click to upload or drag & drop</div>
+                            <div class="upload-hint">JPG, PNG, or WEBP</div>
+                        </label>
+                    </div>
+                    <div id="uploadResult" class="upload-result" style="display: none;"></div>
+                </div>
+            </div>
+
+            <!-- Right Panel: Analysis -->
+            <div class="analysis-section">
+                <!-- Real-time Stats -->
+                <div class="card">
+                    <h2>📊 Live Analysis</h2>
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <div class="stat-icon">👥</div>
+                            <div class="stat-value" id="faceCount">0</div>
+                            <div class="stat-label">Faces Detected</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-icon">😊</div>
+                            <div class="stat-value" id="dominantEmotion">-</div>
+                            <div class="stat-label">Dominant Emotion</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Emotion Chart -->
+                <div class="card">
+                    <h2>🎭 Emotion Distribution</h2>
+                    <div class="emotion-bars" id="emotionBars">
+                        <div class="emotion-item" data-emotion="happy">
+                            <span class="emotion-label">😊 Happy</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                        <div class="emotion-item" data-emotion="sad">
+                            <span class="emotion-label">😢 Sad</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                        <div class="emotion-item" data-emotion="angry">
+                            <span class="emotion-label">😠 Angry</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                        <div class="emotion-item" data-emotion="surprise">
+                            <span class="emotion-label">😲 Surprise</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                        <div class="emotion-item" data-emotion="fear">
+                            <span class="emotion-label">😨 Fear</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                        <div class="emotion-item" data-emotion="disgust">
+                            <span class="emotion-label">🤢 Disgust</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                        <div class="emotion-item" data-emotion="neutral">
+                            <span class="emotion-label">😐 Neutral</span>
+                            <div class="emotion-bar-container">
+                                <div class="emotion-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="emotion-value">0%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detected Faces -->
+                <div class="card">
+                    <h2>👤 Detected Faces</h2>
+                    <div class="faces-list" id="facesList">
+                        <div class="empty-state">
+                            <p>No faces detected yet</p>
+                            <p class="empty-hint">Start camera or upload an image</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Snapshots -->
+                <div class="card">
+                    <h2>📸 Recent Captures</h2>
+                    <div class="snapshots-grid" id="snapshotsGrid">
+                        <div class="empty-state">
+                            <p>No captures yet</p>
+                            <p class="empty-hint">Use the capture button to save moments</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Footer -->
+        <div class="info-footer">
+            <div class="info-item">
+                <strong>🤖 Models:</strong> DeepFace, OpenCV Haar Cascade
+            </div>
+            <div class="info-item">
+                <strong>🎯 Emotions:</strong> 7 categories (Happy, Sad, Angry, Surprise, Fear, Disgust, Neutral)
+            </div>
+            <div class="info-item">
+                <strong>⚡ Processing:</strong> Real-time, ~30 FPS
+            </div>
+            <div class="info-item">
+                <strong>💻 Privacy:</strong> 100% local processing, no data leaves your device
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="spinner"></div>
+        <p>Processing...</p>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
