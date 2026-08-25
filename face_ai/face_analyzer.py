@@ -12,15 +12,25 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+YUNET_MODEL_PATH = os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx')
+
+
 class FaceAnalyzer:
     """Face detection and emotion analysis using open-source models"""
-    
+
     def __init__(self):
         """Initialize face analyzer with models"""
-        self.face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        if not os.path.exists(YUNET_MODEL_PATH):
+            raise FileNotFoundError(
+                f"Face detection model not found at {YUNET_MODEL_PATH}. "
+                "Run 'python download_models.py' once to fetch it."
+            )
+        self.face_detector = cv2.FaceDetectorYN.create(
+            YUNET_MODEL_PATH, "", (320, 320),
+            score_threshold=0.6, nms_threshold=0.3
         )
-        
+
         # Emotion labels
         self.emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
         
@@ -37,27 +47,54 @@ class FaceAnalyzer:
         
         print("✓ Face analyzer initialized")
     
-    def detect_faces(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
+    def detect_faces_raw(self, image: np.ndarray) -> np.ndarray:
         """
-        Detect faces in image using Haar Cascade
-        
+        Run the YuNet detector and return its raw per-face rows.
+
+        Each row is [x, y, w, h, right_eye_x, right_eye_y, left_eye_x,
+        left_eye_y, nose_x, nose_y, right_mouth_x, right_mouth_y,
+        left_mouth_x, left_mouth_y, score] — the 5-point landmarks are
+        needed for face alignment before recognition.
+
         Args:
             image: Input image (BGR format)
-            
+
+        Returns:
+            Nx15 float array (empty if no faces found)
+        """
+        h, w = image.shape[:2]
+        self.face_detector.setInputSize((w, h))
+        _, faces = self.face_detector.detect(image)
+
+        if faces is None:
+            return np.empty((0, 15), dtype=np.float32)
+
+        return faces
+
+    def detect_faces(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """
+        Detect faces in image using the YuNet DNN face detector
+
+        Args:
+            image: Input image (BGR format)
+
         Returns:
             List of face bounding boxes (x, y, width, height)
         """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        faces = self.face_cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30)
-        )
-        
-        return faces
-    
+        raw_faces = self.detect_faces_raw(image)
+        img_h, img_w = image.shape[:2]
+
+        boxes = []
+        for row in raw_faces:
+            x, y, w, h = row[:4]
+            x = max(0, int(round(x)))
+            y = max(0, int(round(y)))
+            w = min(int(round(w)), img_w - x)
+            h = min(int(round(h)), img_h - y)
+            boxes.append((x, y, w, h))
+
+        return boxes
+
     def analyze_face(self, image: np.ndarray, face_box: Tuple[int, int, int, int]) -> Dict:
         """
         Analyze a detected face for emotions and attributes
