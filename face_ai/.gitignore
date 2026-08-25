@@ -37,3 +37,9 @@ static/images/analyzed_*
 .deepface/
 models/
 weights/
+
+# App data (enrolled people, embeddings, media)
+data/
+
+# Secrets
+.env
