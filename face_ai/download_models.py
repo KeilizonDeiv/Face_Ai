@@ -57,7 +57,7 @@ def download(filename, url, expected_sha256):
         )
 
     os.replace(tmp_path, dest)
-    print(f'  ✓ {filename}')
+    print(f'  done: {filename}')
 
 
 def main():
