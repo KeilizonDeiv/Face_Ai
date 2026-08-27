@@ -7,20 +7,36 @@ import cv2
 import numpy as np
 from deepface import DeepFace
 import os
+import threading
+import time
 from typing import List, Dict, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
+
+from tracker import IOUTracker
+from face_recognizer import FaceRecognizer
 
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
 YUNET_MODEL_PATH = os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx')
 
+# How often (in frames) a track's name/emotion gets refreshed once it has
+# one. New tracks are always recognized immediately on their first frame.
+RECOGNIZE_EVERY_N_FRAMES = 12
+
 
 class FaceAnalyzer:
     """Face detection and emotion analysis using open-source models"""
 
-    def __init__(self):
-        """Initialize face analyzer with models"""
+    def __init__(self, recognizer: Optional[FaceRecognizer] = None):
+        """
+        Initialize face analyzer with models.
+
+        Args:
+            recognizer: an existing FaceRecognizer to share (e.g. so the
+                video pipeline and the image-upload path see the same
+                enrolled-people index). A new one is created if omitted.
+        """
         if not os.path.exists(YUNET_MODEL_PATH):
             raise FileNotFoundError(
                 f"Face detection model not found at {YUNET_MODEL_PATH}. "
@@ -30,6 +46,7 @@ class FaceAnalyzer:
             YUNET_MODEL_PATH, "", (320, 320),
             score_threshold=0.6, nms_threshold=0.3
         )
+        self.recognizer = recognizer if recognizer is not None else FaceRecognizer()
 
         # Emotion labels
         self.emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
@@ -45,7 +62,7 @@ class FaceAnalyzer:
             'neutral': (200, 200, 200)  # Gray
         }
         
-        print("✓ Face analyzer initialized")
+        print("Face analyzer initialized")
     
     def detect_faces_raw(self, image: np.ndarray) -> np.ndarray:
         """
@@ -94,6 +111,18 @@ class FaceAnalyzer:
             boxes.append((x, y, w, h))
 
         return boxes
+
+    def recognize_face(self, image: np.ndarray, detection_row: np.ndarray) -> Tuple[Optional[str], float]:
+        """
+        Identify a detected face against the enrolled people, given the
+        image and that face's raw YuNet detection row (used for alignment).
+
+        Returns:
+            (name, match_score) — name is None if no enrolled person
+            matched above the recognizer's threshold.
+        """
+        embedding = self.recognizer.embed(image, detection_row)
+        return self.recognizer.recognize(embedding)
 
     def analyze_face(self, image: np.ndarray, face_box: Tuple[int, int, int, int]) -> Dict:
         """
@@ -152,25 +181,39 @@ class FaceAnalyzer:
     
     def analyze_image(self, image: np.ndarray) -> Dict:
         """
-        Analyze all faces in an image
-        
+        Analyze all faces in a single still image (detection + emotion +
+        recognition). Used for one-off uploads, where there's no video
+        stream to track across, so faces are just numbered in detection
+        order rather than assigned a persistent track id.
+
         Args:
             image: Input image (BGR format)
-            
+
         Returns:
             Dictionary with all face analyses
         """
-        faces = self.detect_faces(image)
-        
+        raw_faces = self.detect_faces_raw(image)
+        img_h, img_w = image.shape[:2]
+
         results = {
-            'num_faces': len(faces),
+            'num_faces': len(raw_faces),
             'faces': [],
             'image_shape': image.shape
         }
-        
-        for i, face_box in enumerate(faces):
-            analysis = self.analyze_face(image, tuple(face_box))
+
+        for i, row in enumerate(raw_faces):
+            x, y, w, h = row[:4]
+            x = max(0, int(round(x)))
+            y = max(0, int(round(y)))
+            w = min(int(round(w)), img_w - x)
+            h = min(int(round(h)), img_h - y)
+            face_box = (x, y, w, h)
+
+            analysis = self.analyze_face(image, face_box)
+            name, match_score = self.recognize_face(image, row)
             analysis['face_id'] = i + 1
+            analysis['name'] = name
+            analysis['match_score'] = match_score
             results['faces'].append(analysis)
         
         return results
@@ -224,10 +267,20 @@ class FaceAnalyzer:
                 2
             )
             
-            # Draw face ID
+            # Draw identity label: recognized name takes priority over the
+            # bare face/track number, "Unknown" if recognition ran and found
+            # nobody, or just the number if recognition hasn't run yet.
+            name = face.get('name')
+            if name:
+                id_label = f"{name} ({face.get('match_score', 0):.2f})"
+            elif 'track_id' in face:
+                id_label = "Unknown" if face.get('recognized_once') else f"Track {face['track_id']}"
+            else:
+                id_label = f"Face {face['face_id']}"
+
             cv2.putText(
                 output,
-                f"Face {face['face_id']}",
+                id_label,
                 (x, y + h + 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
@@ -277,71 +330,205 @@ class FaceAnalyzer:
 
 
 class VideoAnalyzer:
-    """Real-time video analysis for webcam feed"""
-    
-    def __init__(self):
-        self.face_analyzer = FaceAnalyzer()
+    """
+    Real-time video analysis for webcam feed.
+
+    Capture (reading camera frames) and inference (detection + tracking +
+    throttled recognition/emotion) run in separate background threads so
+    the streamed video's frame rate isn't capped by how long a full
+    analysis pass takes.
+    """
+
+    def __init__(self, recognizer: Optional[FaceRecognizer] = None):
+        self.face_analyzer = FaceAnalyzer(recognizer=recognizer)
+        self.tracker = IOUTracker(iou_threshold=0.3, max_disappeared=15)
         self.cap = None
         self.is_running = False
-    
+        self.frame_count = 0
+
+        self._raw_frame: Optional[np.ndarray] = None
+        self._raw_frame_lock = threading.Lock()
+
+        self._annotated_frame: Optional[np.ndarray] = None
+        self._analysis: Dict = {'num_faces': 0, 'faces': []}
+        self._result_lock = threading.Lock()
+
+        self._stop_event = threading.Event()
+        self._capture_thread: Optional[threading.Thread] = None
+        self._inference_thread: Optional[threading.Thread] = None
+
     def start_camera(self, camera_id: int = 0) -> bool:
-        """Start camera capture"""
+        """Start camera capture and the background processing threads"""
         try:
             self.cap = cv2.VideoCapture(camera_id)
-            
+
             if not self.cap.isOpened():
                 return False
-            
+
             # Set camera properties for better performance
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             self.cap.set(cv2.CAP_PROP_FPS, 30)
-            
+
+            self.tracker.reset()
+            self.frame_count = 0
+            with self._raw_frame_lock:
+                self._raw_frame = None
+            with self._result_lock:
+                self._annotated_frame = None
+                self._analysis = {'num_faces': 0, 'faces': []}
+
             self.is_running = True
-            print("✓ Camera started")
+            self._stop_event.clear()
+            self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self._inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
+            self._capture_thread.start()
+            self._inference_thread.start()
+
+            print("Camera started")
             return True
-            
+
         except Exception as e:
-            print(f"✗ Camera start failed: {e}")
+            print(f"Camera start failed: {e}")
             return False
-    
+
     def stop_camera(self):
-        """Stop camera capture"""
+        """Stop the background threads and release the camera"""
+        self.is_running = False
+        self._stop_event.set()
+
+        for t in (self._capture_thread, self._inference_thread):
+            if t is not None:
+                t.join(timeout=2)
+        self._capture_thread = None
+        self._inference_thread = None
+
         if self.cap:
             self.cap.release()
-            self.is_running = False
-            print("✓ Camera stopped")
-    
+            self.cap = None
+
+        print("Camera stopped")
+
+    def _capture_loop(self):
+        """Continuously read camera frames as fast as the camera allows"""
+        while not self._stop_event.is_set():
+            cap = self.cap
+            if cap is None:
+                break
+
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+
+            with self._raw_frame_lock:
+                self._raw_frame = frame
+
+    def _inference_loop(self):
+        """Continuously analyze the most recent frame at whatever rate the AI workload supports"""
+        while not self._stop_event.is_set():
+            with self._raw_frame_lock:
+                frame = None if self._raw_frame is None else self._raw_frame.copy()
+
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            self.frame_count += 1
+            annotated_frame, analysis = self._process_frame(frame)
+
+            with self._result_lock:
+                self._annotated_frame = annotated_frame
+                self._analysis = analysis
+
+    def _process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, Dict]:
+        """Detect, track, and (throttled) recognize/emotion-classify faces in one frame"""
+        raw_faces = self.face_analyzer.detect_faces_raw(frame)
+        img_h, img_w = frame.shape[:2]
+
+        boxes = []
+        for row in raw_faces:
+            x, y, w, h = row[:4]
+            x = max(0, int(round(x)))
+            y = max(0, int(round(y)))
+            w = min(int(round(w)), img_w - x)
+            h = min(int(round(h)), img_h - y)
+            boxes.append((x, y, w, h))
+
+        tracks = self.tracker.update(boxes)
+
+        for track in tracks:
+            if track.detection_index is None:
+                continue  # coasting on its last known box this frame
+
+            due_for_refresh = (
+                track.last_recognized_frame == -1
+                or self.frame_count - track.last_recognized_frame >= RECOGNIZE_EVERY_N_FRAMES
+            )
+            if not due_for_refresh:
+                continue
+
+            row = raw_faces[track.detection_index]
+            emotion_result = self.face_analyzer.analyze_face(frame, track.box)
+            name, score = self.face_analyzer.recognize_face(frame, row)
+
+            track.dominant_emotion = emotion_result['dominant_emotion']
+            track.emotion_confidence = emotion_result['confidence']
+            track.emotion_scores = emotion_result['emotion_scores']
+            track.name = name
+            track.match_score = score
+            track.last_recognized_frame = self.frame_count
+
+        faces = [
+            {
+                'track_id': track.id,
+                'box': track.box,
+                'dominant_emotion': track.dominant_emotion or 'neutral',
+                'confidence': track.emotion_confidence,
+                'emotion_scores': track.emotion_scores or {e: 0 for e in self.face_analyzer.emotions},
+                'name': track.name,
+                'match_score': track.match_score,
+                'recognized_once': track.last_recognized_frame != -1,
+            }
+            for track in tracks
+        ]
+
+        analysis = {
+            'num_faces': len(faces),
+            'faces': faces,
+            'image_shape': frame.shape,
+        }
+
+        annotated_frame = self.face_analyzer.draw_analysis(frame, analysis)
+        return annotated_frame, analysis
+
     def get_frame(self) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
         """
-        Get and analyze single frame
-        
-        Returns:
-            Tuple of (frame, analysis) or (None, None) if failed
+        Get the most recently processed frame + analysis. Capture and
+        inference already run continuously in background threads, so this
+        just reads the latest buffered result instead of blocking on a
+        fresh camera read + analysis pass.
         """
-        if not self.cap or not self.is_running:
+        if not self.is_running:
             return None, None
-        
-        ret, frame = self.cap.read()
-        
-        if not ret:
-            return None, None
-        
-        # Analyze frame
-        analysis = self.face_analyzer.analyze_image(frame)
-        
-        # Draw annotations
-        annotated_frame = self.face_analyzer.draw_analysis(frame, analysis)
-        
-        return annotated_frame, analysis
-    
+
+        with self._result_lock:
+            if self._annotated_frame is None:
+                return None, None
+            return self._annotated_frame.copy(), self._analysis
+
+    def get_latest_analysis(self) -> Dict:
+        """Thread-safe accessor for the latest analysis, for the /get_analysis route"""
+        with self._result_lock:
+            return self._analysis
+
     def save_snapshot(self, frame: np.ndarray, filepath: str) -> bool:
         """Save current frame as image"""
         try:
             cv2.imwrite(filepath, frame)
             return True
         except Exception as e:
-            print(f"✗ Save failed: {e}")
+            print(f"Save failed: {e}")
             return False
 
 
@@ -369,5 +556,5 @@ if __name__ == "__main__":
         2
     )
     
-    print("\n✓ Face analyzer ready")
+    print("\nFace analyzer ready")
     print("Use VideoAnalyzer class for real-time camera analysis")
