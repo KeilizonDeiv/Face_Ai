@@ -4,3 +4,4 @@ deepface==0.0.93
 numpy==1.26.2
 tf-keras==2.18.0
 tensorflow==2.18.0
+python-dotenv==1.0.1
