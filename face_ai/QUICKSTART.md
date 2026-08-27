@@ -7,20 +7,28 @@
 pip install -r requirements.txt
 ```
 
-**Important:** First installation downloads deep learning models (~100MB)
-- This happens automatically on first run
-- One-time download, then cached locally
-- Be patient during first install!
+### Step 2: Download the Detection/Recognition Models (one-time, ~37MB)
+```bash
+python download_models.py
+```
 
-### Step 2: Run the Application
+### Step 3: Set Your Password
+```bash
+cp .env.example .env
+# edit .env and set FACE_AI_PASSWORD to something only you know
+```
+
+**Important:** DeepFace's emotion model (~6MB) still downloads automatically on first run - be patient during that first launch.
+
+### Step 4: Run the Application
 ```bash
 python app.py
 ```
 
-### Step 3: Open Browser
-Open: **http://localhost:5000**
+### Step 5: Open Browser & Sign In
+Open: **http://localhost:5000** and sign in with the password you set in `.env`
 
-### Step 4: Start Camera
+### Step 6: Start Camera
 1. Click "Start Camera" button
 2. Allow camera permissions when prompted
 3. Watch the magic happen! ✨
@@ -53,6 +61,11 @@ Click Capture → Saves analyzed frame → View in gallery
 ### 3. Upload Images
 ```
 Drag & drop image → Automatic analysis → See results with annotations
+```
+
+### 4. Enroll & Recognize People
+```
+Add Person (name + photos) → Start Camera → See them labeled by name instead of "Unknown"
 ```
 
 ---
@@ -211,7 +224,7 @@ Try making these expressions:
 ### Gallery:
 - Recent captures shown on right
 - Click to view full size
-- Saved to `static/images/`
+- Saved to `data/media/` (served only to signed-in sessions via `/media`)
 
 ---
 
@@ -231,8 +244,8 @@ Try making these expressions:
 4. **Change Expressions** (1 min)
    "Watch as I change expressions - happy, sad, surprised..."
 
-5. **Multiple Faces** (30 sec)
-   "It can track multiple people simultaneously"
+5. **Multiple Faces + Recognition** (30 sec)
+   "It tracks multiple people simultaneously and recognizes anyone I've enrolled by name"
 
 6. **Capture** (20 sec)
    "I can capture and save any moment with analysis"
@@ -241,7 +254,7 @@ Try making these expressions:
    "Also works with uploaded images"
 
 8. **Technical Details** (1 min)
-   "Uses OpenCV for detection, DeepFace for emotions, 100% open-source"
+   "Uses OpenCV DNN models for detection and recognition, DeepFace for emotions, all 100% open-source and offline"
 
 **Total: ~5 minutes**
 
@@ -256,18 +269,20 @@ Try making these expressions:
 "Real-time face detection and emotion analysis using OpenCV and deep learning"
 
 ### Skills to Highlight:
-- Computer Vision (OpenCV)
-- Deep Learning (TensorFlow)
-- Real-time Video Processing
-- Flask Video Streaming
-- Multi-face Tracking
+- Computer Vision (OpenCV DNN detection & recognition)
+- Deep Learning (TensorFlow/DeepFace)
+- Multi-object Tracking (custom IOU tracker)
+- Real-time Video Processing (multi-threaded capture/inference)
+- Flask Video Streaming & Session Authentication
 
 ### Project Bullets:
 ```
-• Built real-time emotion detection system with 30 FPS performance
-• Implemented multi-face tracking using OpenCV Haar Cascades
-• Integrated DeepFace for 7-emotion classification
-• Created live video streaming interface with Flask
+• Built real-time face detection, tracking, and recognition system using OpenCV DNN models (YuNet/SFace)
+• Implemented a custom IOU-based tracker for stable per-person IDs across video frames
+• Added photo-based enrollment so new people can be recognized without retraining any model
+• Integrated DeepFace for 7-emotion classification, throttled per-track for performance
+• Decoupled video capture from AI inference across threads to keep the stream smooth
+• Added session-based authentication and secure media serving
 • 100% open-source, no paid APIs required
 ```
 
@@ -303,7 +318,7 @@ Try making these expressions:
 
 After mastering this, try:
 
-1. **Face Recognition System** (identify individuals)
+1. **Liveness/Anti-Spoofing Detection** (tell a real face from a photo held up to the camera)
 2. **Gesture Recognition** (hand tracking)
 3. **Object Detection** (YOLO implementation)
 4. **Pose Estimation** (body keypoints)
@@ -333,11 +348,14 @@ After mastering this, try:
 # Install
 pip install -r requirements.txt
 
+# Download models (one-time)
+python download_models.py
+
 # Run
 python app.py
 
-# Run on different port
-python app.py --port 8000
+# Run on a different port (set in .env)
+FACE_AI_PORT=8000 python app.py
 
 # Test camera
 python -c "import cv2; cv2.VideoCapture(0)"
@@ -346,7 +364,7 @@ python -c "import cv2; cv2.VideoCapture(0)"
 python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
 
 # Clear cache
-rm -rf __pycache__ static/images/snapshot_*
+rm -rf __pycache__ data/media/*
 ```
 
 ---
