@@ -7,31 +7,35 @@ A **100% open-source and offline** computer vision application for real-time fac
 This advanced AI system demonstrates state-of-the-art computer vision techniques using only free, open-source technologies. It performs real-time face detection and emotion recognition through your webcam or uploaded images.
 
 **Key Features:**
-- ✅ Real-time face detection with webcam support
+- ✅ Real-time face detection with webcam support (YuNet DNN detector)
+- ✅ Stable multi-face tracking across frames (IOU tracker), not just per-frame detection
+- ✅ Face recognition / identification - enroll people by name + photos, then recognize them live (SFace)
 - ✅ 7-emotion classification (Happy, Sad, Angry, Surprise, Fear, Disgust, Neutral)
-- ✅ Multiple face tracking simultaneously
 - ✅ Live emotion distribution charts
 - ✅ Snapshot capture and save
 - ✅ Image upload and batch analysis
-- ✅ 100% offline - works without internet
+- ✅ Login-gated dashboard, upload validation, secure media serving
+- ✅ 100% offline - works without internet after a one-time model download
 - ✅ No API keys or paid services required
 - ✅ Privacy-focused - all processing on your device
 
 ## 💼 Skills Demonstrated
 
 ### Computer Vision & Deep Learning
-- Face detection using Haar Cascades
+- Face detection using a DNN detector (YuNet)
+- Face recognition / identification using embeddings (SFace) with a simple enroll-by-photo workflow
+- Multi-object tracking (custom IOU tracker) for stable per-person IDs across frames
 - Emotion recognition with deep neural networks
 - Real-time video processing
-- Multi-face tracking and analysis
 - OpenCV image manipulation
 - TensorFlow/Keras model inference
 
 ### Software Engineering
 - Real-time video streaming with Flask
+- Decoupled capture/inference background threads for a smooth stream under a heavier AI pipeline
+- Throttled recognition (recognize every N frames per track, not every frame) as a performance/accuracy tradeoff
+- Session-based authentication, upload validation, and secure media serving
 - Efficient frame processing pipeline
-- Multi-threaded video capture
-- Memory-efficient batch processing
 - Clean, modular architecture
 
 ### Web Development
@@ -45,10 +49,12 @@ This advanced AI system demonstrates state-of-the-art computer vision techniques
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| **Face Detection** | OpenCV Haar Cascade | Fast face localization |
+| **Face Detection** | OpenCV YuNet (DNN) | Accurate face localization + landmarks |
+| **Face Recognition** | OpenCV SFace (DNN) | Identify enrolled people from embeddings |
+| **Face Tracking** | Custom IOU tracker | Stable per-person IDs across video frames |
 | **Emotion Recognition** | DeepFace | Deep learning emotion analysis |
-| **Backend** | TensorFlow + Keras | Neural network inference |
-| **Web Framework** | Flask | Real-time video streaming |
+| **Backend** | TensorFlow + Keras | Neural network inference (emotion model) |
+| **Web Framework** | Flask | Real-time video streaming + session auth |
 | **Frontend** | HTML5, CSS3, JavaScript | Interactive UI |
 | **Video Processing** | OpenCV | Camera capture & image processing |
 
@@ -56,19 +62,29 @@ This advanced AI system demonstrates state-of-the-art computer vision techniques
 
 ```
 face_ai/
-├── app.py                    # Flask application & video streaming
-├── face_analyzer.py          # Face detection & emotion analysis engine
+├── app.py                    # Flask application, routes, auth wiring
+├── face_analyzer.py          # Detection + tracking + recognition + emotion pipeline
+├── tracker.py                # IOU-based multi-face tracker
+├── face_recognizer.py        # Enrollment/recognition (SFace embeddings)
+├── auth.py                   # Session-based login gate
+├── download_models.py        # One-time fetch of YuNet/SFace ONNX weights
 ├── requirements.txt          # Python dependencies
+├── .env.example              # Template for FACE_AI_PASSWORD etc. (copy to .env)
 ├── README.md                # Documentation
-├── uploads/                 # Uploaded images (auto-created)
+├── models/                  # Downloaded ONNX weights (git-ignored)
+├── data/                    # Enrolled people, embeddings, saved media (git-ignored)
+│   ├── people/<name>/       # Enrollment photos per person
+│   ├── embeddings.json      # Face embedding index
+│   └── media/               # Snapshots/analyzed images (served via /media)
 ├── static/
 │   ├── css/
 │   │   └── style.css       # Modern styling
 │   ├── js/
 │   │   └── script.js       # Real-time updates & interactivity
-│   └── images/             # Captured snapshots
+│   └── images/             # Placeholder image only (see data/media for captures)
 └── templates/
-    └── index.html          # Main web interface
+    ├── index.html          # Main web interface
+    └── login.html          # Login page
 ```
 
 ## 🚀 Installation & Setup
@@ -101,19 +117,38 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Note:** First-time installation downloads deep learning models (~100MB). This is a one-time download.
+4. **Download the detection/recognition models (one-time, ~37MB):**
+```bash
+python download_models.py
+```
 
-4. **Run the application:**
+5. **Configure your password:**
+```bash
+cp .env.example .env
+# edit .env and set FACE_AI_PASSWORD (and ideally FACE_AI_SECRET_KEY)
+```
+
+**Note:** First run also downloads DeepFace's emotion model (~6MB) automatically.
+
+6. **Run the application:**
 ```bash
 python app.py
 ```
 
-5. **Open your browser:**
-Navigate to `http://localhost:5000`
+7. **Open your browser:**
+Navigate to `http://localhost:5000` and sign in with the password you set
 
-6. **Grant camera access when prompted**
+8. **Grant camera access when prompted**
 
 ## 💻 How to Use
+
+### Enrolling People (Training)
+
+1. Scroll to the "Enrolled People" panel
+2. Enter a name and choose one or more clear, front-facing photos of that person
+3. Click "Add Person" - each photo is detected, aligned, and turned into a face embedding
+4. That person will now be recognized by name in the live feed and image uploads
+5. Remove someone at any time with the "Remove" button on their card
 
 ### Real-Time Camera Analysis
 
@@ -123,8 +158,9 @@ Navigate to `http://localhost:5000`
    - Your webcam feed appears with real-time analysis
 
 2. **View Analysis**
-   - See detected faces with bounding boxes
-   - Each face labeled with dominant emotion
+   - See detected faces with bounding boxes and a stable track ID per person
+   - Enrolled people are labeled with their name; everyone else shows "Unknown"
+   - Each face also labeled with dominant emotion
    - Real-time emotion distribution chart updates
    - Confidence scores for each detection
 
@@ -156,52 +192,51 @@ Navigate to `http://localhost:5000`
 ```
 Video Frame / Image
     ↓
-1. PREPROCESSING
-   ├── Convert to grayscale
-   ├── Normalize contrast
-   └── Resize for efficiency
+1. FACE DETECTION (per frame)
+   ├── YuNet DNN detector
+   ├── Bounding box + 5-point landmarks per face
+   └── Runs on every frame
     ↓
-2. FACE DETECTION
-   ├── Haar Cascade algorithm
-   ├── Multi-scale detection
-   └── Face localization (x, y, w, h)
+2. TRACKING (video only)
+   ├── Greedy IOU matching against existing tracks
+   ├── Assigns/keeps a stable track ID per person
+   └── Drops tracks after ~15 frames unseen
     ↓
-3. FACE EXTRACTION
-   ├── Extract face region with padding
-   ├── Prepare for emotion model
-   └── Normalize pixel values
+3. RECOGNITION + EMOTION (throttled per track)
+   ├── SFace: align face using landmarks, embed, compare to enrolled people
+   ├── DeepFace: 7-class emotion CNN inference
+   └── Re-run every ~12 frames per track (not every frame) for performance
     ↓
-4. EMOTION ANALYSIS
-   ├── DeepFace CNN inference
-   ├── 7-class softmax output
-   └── Confidence scores
-    ↓
-5. VISUALIZATION
+4. VISUALIZATION
    ├── Draw bounding boxes
-   ├── Label emotions
+   ├── Label track ID / recognized name / emotion
    └── Display confidence
 ```
 
-### Emotion Detection Models
+### Detection, Recognition & Emotion Models
 
-**DeepFace Framework:**
+**YuNet (face detection):**
+- Lightweight ONNX DNN detector from the OpenCV Zoo
+- Far more accurate than Haar Cascades off-axis, partially occluded, or at a distance
+- Also outputs 5-point landmarks, used to align faces before recognition
+
+**SFace (face recognition):**
+- ONNX embedding model, also from the OpenCV Zoo
+- Turns an aligned face into a 128-d vector; people are matched by cosine similarity
+- Runs fully offline once the model file is downloaded once via `download_models.py`
+
+**DeepFace Framework (emotion only):**
 - Uses pre-trained VGG-Face architecture
 - Trained on FER2013 dataset (35,000+ faces)
 - 7 emotion categories with ~65% accuracy
 - Optimized for real-time inference
 
-**Haar Cascade Classifier:**
-- Classical computer vision technique
-- Fast detection (30+ FPS)
-- Works in varying lighting conditions
-- Low computational overhead
-
 ### Performance Characteristics
 
-- **Detection Speed:** ~30 FPS on modern CPU
-- **Emotion Analysis:** ~100ms per face
-- **Memory Usage:** ~500MB with models loaded
-- **Latency:** <500ms end-to-end
+- **Detection + tracking:** runs every frame (YuNet + IOU tracker are cheap)
+- **Recognition + emotion:** throttled to roughly every 12 frames per tracked person
+- **Capture vs. inference:** run in separate threads so the video stream stays smooth even while analysis is heavier
+- **Memory Usage:** ~500MB+ with all models loaded
 - **Concurrent Faces:** Up to 10 faces simultaneously
 
 ## 📊 Emotion Categories Explained
@@ -245,13 +280,22 @@ Video Frame / Image
 ### Adjust Detection Parameters
 
 ```python
-# In face_analyzer.py, modify Haar Cascade settings:
-faces = self.face_cascade.detectMultiScale(
-    gray,
-    scaleFactor=1.05,    # Smaller = more accurate, slower
-    minNeighbors=3,      # Lower = more detections, more false positives
-    minSize=(50, 50)     # Minimum face size in pixels
+# In face_analyzer.py, modify YuNet settings:
+self.face_detector = cv2.FaceDetectorYN.create(
+    YUNET_MODEL_PATH, "", (320, 320),
+    score_threshold=0.6,   # Lower = more detections, more false positives
+    nms_threshold=0.3
 )
+```
+
+### Adjust Recognition/Tracking Throttling
+
+```python
+# In face_analyzer.py:
+RECOGNIZE_EVERY_N_FRAMES = 12   # Lower = names update faster, more CPU use
+
+# In VideoAnalyzer.__init__:
+self.tracker = IOUTracker(iou_threshold=0.3, max_disappeared=15)
 ```
 
 ### Optimize for Performance
@@ -293,11 +337,13 @@ analysisInterval = setInterval(updateAnalysis, 1000); // Update every 1 second i
 
 ### Local Network Access
 
-```bash
-# Make accessible to other devices on your network
-python app.py --host 0.0.0.0 --port 5000
-# Access from other devices: http://YOUR_IP:5000
+The app binds to `127.0.0.1` (localhost only) by default. To make it reachable from other devices on your network, set in `.env`:
+
 ```
+FACE_AI_HOST=0.0.0.0
+```
+
+**Only do this on a trusted network** - the login gate is a single shared password, not a hardened multi-user system. Access from other devices at `http://YOUR_IP:5000`.
 
 ### Docker Deployment
 
@@ -325,8 +371,9 @@ Works on Raspberry Pi 4 with slight modifications:
 
 - **All processing is local** - No data leaves your device
 - **No cloud services** - Everything runs on your machine
-- **No data storage** - Frames processed and discarded
-- **Snapshots are local** - Saved only to your device
+- **Login required** - A shared password gates the whole dashboard; set `FACE_AI_PASSWORD` before first use
+- **Enrolled photos/snapshots are local** - Stored under `data/` (git-ignored), served only to authenticated sessions via `/media` and `/people/<name>/photo/...`
+- **Debug mode off by default** - Flask's interactive debugger (which allows code execution) stays off unless you explicitly set `FLASK_DEBUG=1`
 
 ### Limitations
 
@@ -395,10 +442,10 @@ pip install tensorflow-gpu
 
 **Advanced Features:**
 - Age and gender detection
-- Facial landmark detection (68 points)
-- Face recognition (identify individuals)
+- 68-point facial landmark detection (beyond YuNet's 5 alignment points)
 - Emotion history tracking over time
 - Export analysis data to CSV
+- Multi-user accounts with roles (currently a single shared password)
 
 **Technical Enhancements:**
 - GPU acceleration with CUDA
@@ -411,11 +458,11 @@ pip install tensorflow-gpu
 
 ### Expected Questions
 
-**Q: Why use Haar Cascades instead of deep learning for detection?**
-A: Haar Cascades are extremely fast (30+ FPS) and work well for real-time applications. For emotion analysis, we do use deep learning (DeepFace), creating a hybrid approach that balances speed and accuracy.
+**Q: Why YuNet/SFace instead of Haar Cascades or DeepFace for detection/recognition?**
+A: Haar Cascades are fast but miss faces that are angled, partially occluded, or small - exactly what a live webcam produces. YuNet is a small ONNX DNN (still ~free/offline, no new dependency since it ships with opencv-python) with much better recall, and it outputs landmarks needed for alignment. SFace is a lightweight, purpose-built embedding model from the same OpenCV Zoo family, which avoids stacking a second heavy TensorFlow model (DeepFace's recognition backends) on top of the emotion model already in use.
 
-**Q: How do you handle multiple faces?**
-A: The system detects all faces in frame using multi-scale detection, analyzes each independently with DeepFace, then aggregates results for the emotion distribution chart.
+**Q: How do you handle multiple faces, and keep track of who's who across frames?**
+A: Each frame's detections are matched against existing tracks using IOU (intersection-over-union) so a person keeps the same ID as they move, rather than being renumbered every frame. Recognition and emotion analysis are throttled to run every ~12 frames per track instead of every frame, since they're the expensive steps - the box still updates every frame from tracking alone.
 
 **Q: What's the accuracy of emotion detection?**
 A: ~65% on FER2013 dataset, which is state-of-the-art for open-source models. Commercial systems reach 70-75%. Accuracy varies with lighting, angle, and expression intensity.
