@@ -10,8 +10,11 @@
     <div class="container">
         <!-- Header -->
         <header class="header">
+            <form class="logout-form" method="POST" action="/logout">
+                <button type="submit" class="logout-btn">Logout</button>
+            </form>
             <h1>🎭 AI Face Analysis System</h1>
-            <p class="subtitle">Real-Time Emotion Detection & Face Recognition</p>
+            <p class="subtitle">Real-Time Face Detection, Tracking & Recognition</p>
             <div class="tech-badges">
                 <span class="badge">100% Open-Source</span>
                 <span class="badge">No API Required</span>
@@ -160,6 +163,24 @@
                     </div>
                 </div>
 
+                <!-- Enrolled People -->
+                <div class="card">
+                    <h2>🧑‍🤝‍🧑 Enrolled People</h2>
+                    <div class="people-grid" id="peopleGrid">
+                        <div class="empty-state">
+                            <p>No one enrolled yet</p>
+                            <p class="empty-hint">Add a person below to start recognizing them</p>
+                        </div>
+                    </div>
+                    <form class="add-person-form" id="addPersonForm">
+                        <input type="text" id="personName" placeholder="Person's name" required>
+                        <input type="file" id="personPhotos" accept="image/*" multiple required>
+                        <button type="submit" class="btn btn-primary">
+                            <span class="btn-icon">➕</span> Add Person
+                        </button>
+                    </form>
+                </div>
+
                 <!-- Snapshots -->
                 <div class="card">
                     <h2>📸 Recent Captures</h2>
@@ -176,16 +197,16 @@
         <!-- Info Footer -->
         <div class="info-footer">
             <div class="info-item">
-                <strong>🤖 Models:</strong> DeepFace, OpenCV Haar Cascade
+                <strong>🤖 Models:</strong> YuNet (detection), SFace (recognition), DeepFace (emotion)
             </div>
             <div class="info-item">
                 <strong>🎯 Emotions:</strong> 7 categories (Happy, Sad, Angry, Surprise, Fear, Disgust, Neutral)
             </div>
             <div class="info-item">
-                <strong>⚡ Processing:</strong> Real-time, ~30 FPS
+                <strong>🔎 Tracking:</strong> Stable per-person IDs across frames, throttled recognition
             </div>
             <div class="info-item">
-                <strong>💻 Privacy:</strong> 100% local processing, no data leaves your device
+                <strong>💻 Privacy:</strong> 100% local processing, no data leaves your device, login required
             </div>
         </div>
     </div>
