@@ -6,15 +6,27 @@ let analysisInterval = null;
 document.addEventListener('DOMContentLoaded', function() {
     checkCameraStatus();
     setupImageUpload();
+    setupAddPersonForm();
     loadSnapshots();
+    loadPeople();
 });
+
+// fetch() wrapper: redirects to the login page if the session has expired
+async function apiFetch(url, options) {
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+        window.location.href = '/login';
+        throw new Error('Not authenticated');
+    }
+    return response;
+}
 
 // Start camera
 async function startCamera() {
     showLoading(true);
     
     try {
-        const response = await fetch('/start_camera', {
+        const response = await apiFetch('/start_camera', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ camera_id: 0 })
@@ -43,7 +55,7 @@ async function startCamera() {
 // Stop camera
 async function stopCamera() {
     try {
-        const response = await fetch('/stop_camera', {
+        const response = await apiFetch('/stop_camera', {
             method: 'POST'
         });
         
@@ -122,7 +134,7 @@ async function updateAnalysis() {
     if (!cameraActive) return;
     
     try {
-        const response = await fetch('/get_analysis');
+        const response = await apiFetch('/get_analysis');
         const data = await response.json();
         
         // Update face count
@@ -180,15 +192,26 @@ function updateFacesList(faces) {
     facesList.innerHTML = faces.map(face => `
         <div class="face-item">
             <div class="face-info">
-                <div class="face-id">Face ${face.face_id}</div>
+                <div class="face-id">
+                    Track ${face.track_id}
+                    ${identityBadge(face)}
+                </div>
                 <div class="face-emotion">
-                    ${getEmotionEmoji(face.dominant_emotion)} 
+                    ${getEmotionEmoji(face.dominant_emotion)}
                     ${face.dominant_emotion.charAt(0).toUpperCase() + face.dominant_emotion.slice(1)}
                 </div>
             </div>
             <div class="face-confidence">${face.confidence.toFixed(1)}%</div>
         </div>
     `).join('');
+}
+
+// Render the recognized-name / unknown badge for a tracked face
+function identityBadge(face) {
+    if (face.name) {
+        return `<span class="identity-badge recognized">${face.name}</span>`;
+    }
+    return `<span class="identity-badge unknown">Unknown</span>`;
 }
 
 // Get emotion emoji
@@ -235,7 +258,7 @@ async function captureSnapshot() {
     }
     
     try {
-        const response = await fetch('/capture_snapshot', {
+        const response = await apiFetch('/capture_snapshot', {
             method: 'POST'
         });
         
@@ -293,7 +316,7 @@ async function handleImageUpload(event) {
     formData.append('image', file);
     
     try {
-        const response = await fetch('/analyze_image', {
+        const response = await apiFetch('/analyze_image', {
             method: 'POST',
             body: formData
         });
@@ -309,7 +332,7 @@ async function handleImageUpload(event) {
                     <strong>Detected ${data.analysis.num_faces} face(s)</strong>
                     ${data.analysis.faces.map(face => `
                         <div style="margin-top: 10px;">
-                            Face ${face.face_id}: ${face.emotion} (${face.confidence.toFixed(1)}%)
+                            Face ${face.face_id}: ${face.name ? face.name : 'Unknown'} &mdash; ${face.emotion} (${face.confidence.toFixed(1)}%)
                         </div>
                     `).join('')}
                 </div>
@@ -333,7 +356,7 @@ async function handleImageUpload(event) {
 // Load snapshots
 async function loadSnapshots() {
     try {
-        const response = await fetch('/get_snapshots');
+        const response = await apiFetch('/get_snapshots');
         const data = await response.json();
         
         const grid = document.getElementById('snapshotsGrid');
@@ -363,10 +386,103 @@ function viewSnapshot(path) {
     window.open(path, '_blank');
 }
 
+// Wire up the "Add Person" enrollment form
+function setupAddPersonForm() {
+    const form = document.getElementById('addPersonForm');
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const name = document.getElementById('personName').value.trim();
+        const photoFiles = document.getElementById('personPhotos').files;
+
+        if (!name || photoFiles.length === 0) {
+            showToast('Enter a name and choose at least one photo', 'error');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('name', name);
+        for (const file of photoFiles) {
+            formData.append('photos', file);
+        }
+
+        showLoading(true);
+        try {
+            const response = await apiFetch('/people', { method: 'POST', body: formData });
+            const data = await response.json();
+
+            if (data.success) {
+                const failed = data.photos_failed ? data.photos_failed.length : 0;
+                const message = failed > 0
+                    ? `Enrolled ${name} (${data.photos_enrolled} photo(s), ${failed} had no detectable face)`
+                    : `Enrolled ${name} (${data.photos_enrolled} photo(s))`;
+                showToast(message, 'success');
+                form.reset();
+                loadPeople();
+            } else {
+                throw new Error(data.error || 'Failed to enroll person');
+            }
+        } catch (error) {
+            showToast(`Error: ${error.message}`, 'error');
+        } finally {
+            showLoading(false);
+        }
+    });
+}
+
+// Load enrolled people into the panel
+async function loadPeople() {
+    try {
+        const response = await apiFetch('/people');
+        const data = await response.json();
+
+        const grid = document.getElementById('peopleGrid');
+
+        if (data.success && data.people.length > 0) {
+            grid.innerHTML = data.people.map(person => `
+                <div class="person-card">
+                    ${person.thumbnail
+                        ? `<img src="/people/${encodeURIComponent(person.name)}/photo/${encodeURIComponent(person.thumbnail)}" alt="${person.name}">`
+                        : `<img alt="${person.name}">`}
+                    <div class="person-name">${person.name}</div>
+                    <div class="person-photos">${person.num_photos} photo(s)</div>
+                    <button class="person-delete-btn" onclick="deletePerson('${person.name}')">Remove</button>
+                </div>
+            `).join('');
+        } else {
+            grid.innerHTML = `
+                <div class="empty-state">
+                    <p>No one enrolled yet</p>
+                    <p class="empty-hint">Add a person below to start recognizing them</p>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Load people error:', error);
+    }
+}
+
+// Remove an enrolled person
+async function deletePerson(name) {
+    try {
+        const response = await apiFetch(`/people/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const data = await response.json();
+
+        if (data.success) {
+            showToast(`Removed ${name}`, 'success');
+            loadPeople();
+        } else {
+            throw new Error(data.error || 'Failed to remove person');
+        }
+    } catch (error) {
+        showToast(`Error: ${error.message}`, 'error');
+    }
+}
+
 // Check camera status
 async function checkCameraStatus() {
     try {
-        const response = await fetch('/camera_status');
+        const response = await apiFetch('/camera_status');
         const data = await response.json();
         
         if (data.is_running) {
