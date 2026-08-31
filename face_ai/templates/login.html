@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in - AI Face Analysis System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container" style="max-width: 420px; padding-top: 8vh;">
+        <header class="header">
+            <h1>🎭 AI Face Analysis System</h1>
+            <p class="subtitle">Sign in to continue</p>
+        </header>
+
+        <div class="card">
+            {% if error %}
+            <div class="upload-result" style="display:block; background:#fee2e2; color:#991b1b; border-radius:8px; padding:12px; margin-bottom:16px;">
+                {{ error }}
+            </div>
+            {% endif %}
+
+            <form method="POST" action="{{ url_for('login') }}">
+                <input type="hidden" name="next" value="{{ next }}">
+                <label for="password" style="display:block; margin-bottom:8px; font-weight:600; color:#1f2937;">
+                    Password
+                </label>
+                <input
+                    type="password"
+                    id="password"
+                    name="password"
+                    autofocus
+                    required
+                    style="width:100%; padding:12px 14px; border:1px solid #d1d5db; border-radius:8px; font-size:1rem; margin-bottom:16px;"
+                >
+                <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center;">
+                    Sign in
+                </button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
