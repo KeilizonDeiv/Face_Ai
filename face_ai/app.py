@@ -12,10 +12,12 @@ if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
+import logging
 import secrets
 import time
 import uuid
 import os
+from datetime import timedelta
 
 from dotenv import load_dotenv
 
@@ -30,23 +32,59 @@ import cv2
 import numpy as np
 
 from face_analyzer import FaceAnalyzer, VideoAnalyzer
-from face_recognizer import FaceRecognizer, PEOPLE_DIR
-from auth import check_password, login_required_page, login_required_api
+from face_recognizer import FaceRecognizer, PEOPLE_DIR, MATCH_THRESHOLD
+from auth import (
+    check_password, login_required_page, login_required_api,
+    is_login_rate_limited, record_failed_login, clear_login_attempts,
+    get_csrf_token, csrf_token_valid, CSRF_HEADER_NAME, CSRF_FORM_FIELD,
+    CSRF_SAFE_METHODS,
+)
+
+logging.basicConfig(
+    level=logging.DEBUG if os.environ.get('FLASK_DEBUG', '0') == '1' else logging.INFO,
+    format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
+)
+logger = logging.getLogger('face_ai')
+
+# Separate audit trail (who logged in/out, enrolled/removed people, ran the
+# camera) kept in its own file rather than mixed into the general console
+# log, so it survives independently and stays easy to review.
+os.makedirs('data', exist_ok=True)
+audit_logger = logging.getLogger('face_ai.audit')
+audit_logger.setLevel(logging.INFO)
+audit_logger.propagate = False
+_audit_handler = logging.FileHandler(os.path.join('data', 'audit.log'), encoding='utf-8')
+_audit_handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+audit_logger.addHandler(_audit_handler)
+
+
+def audit(action: str, detail: str = ''):
+    ip = request.remote_addr or 'unknown'
+    audit_logger.info(f"{action} ip={ip} {detail}".rstrip())
+
 
 app = Flask(__name__)
 
 app.secret_key = os.environ.get('FACE_AI_SECRET_KEY')
 if not app.secret_key:
-    print(
-        "WARNING: FACE_AI_SECRET_KEY is not set. Using a randomly generated "
-        "key for this run only, so sessions won't survive a restart. Set "
+    logger.warning(
+        "FACE_AI_SECRET_KEY is not set. Using a randomly generated key for "
+        "this run only, so sessions won't survive a restart. Set "
         "FACE_AI_SECRET_KEY in your .env for stable sessions."
     )
     app.secret_key = secrets.token_hex(32)
 
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+# Set FACE_AI_HTTPS=1 once the app is served over TLS (e.g. behind a reverse
+# proxy) so session cookies are never sent over plain HTTP.
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FACE_AI_HTTPS', '0') == '1'
 app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024  # 8MB upload cap
+# Sessions expire after this many hours of being issued, instead of lasting
+# indefinitely as long as the browser stays open.
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
+    hours=float(os.environ.get('FACE_AI_SESSION_HOURS', '12'))
+)
 
 ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
 
@@ -65,6 +103,25 @@ image_analyzer = FaceAnalyzer(recognizer=shared_recognizer)
 # reachable through the authenticated /media/<filename> route below.
 MEDIA_FOLDER = os.path.join('data', 'media')
 os.makedirs(MEDIA_FOLDER, exist_ok=True)
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {'csrf_token': get_csrf_token}
+
+
+@app.before_request
+def enforce_csrf():
+    if request.method in CSRF_SAFE_METHODS:
+        return None
+
+    submitted = request.form.get(CSRF_FORM_FIELD) or request.headers.get(CSRF_HEADER_NAME)
+    if not csrf_token_valid(submitted):
+        if request.path == '/login':
+            # No session yet on a first-ever visit; render the login page's
+            # error state instead of a bare JSON 400.
+            return render_template('login.html', error='Session expired, please try again', next=request.form.get('next', '')), 400
+        return jsonify({'success': False, 'error': 'Invalid or missing CSRF token'}), 400
 
 
 def generate_frames():
@@ -93,11 +150,22 @@ def login():
     error = None
 
     if request.method == 'POST':
+        client_ip = request.remote_addr or 'unknown'
+        if is_login_rate_limited(client_ip):
+            error = 'Too many attempts. Please wait a few minutes and try again.'
+            return render_template('login.html', error=error, next=next_url), 429
+
         password = request.form.get('password', '')
         if check_password(password):
+            clear_login_attempts(client_ip)
             session.clear()
             session['authenticated'] = True
+            session.permanent = True
+            audit('login_success')
             return redirect(next_url)
+
+        record_failed_login(client_ip)
+        audit('login_failed')
         error = 'Incorrect password'
 
     return render_template('login.html', error=error, next=next_url)
@@ -105,8 +173,15 @@ def login():
 
 @app.route('/logout', methods=['POST'])
 def logout():
+    audit('logout')
     session.clear()
     return redirect(url_for('login'))
+
+
+@app.route('/healthz')
+def healthz():
+    """Unauthenticated liveness check for uptime monitoring / container orchestration"""
+    return jsonify({'status': 'ok'})
 
 
 @app.route('/')
@@ -126,6 +201,26 @@ def video_feed():
     )
 
 
+@app.route('/cameras')
+@login_required_api
+def list_cameras():
+    """
+    Probe a handful of device indices for available cameras. Skipped while
+    a camera is already running to avoid fighting it for the device.
+    """
+    if video_analyzer.is_running:
+        return jsonify({'success': True, 'cameras': [], 'busy': True})
+
+    available = []
+    for camera_id in range(4):
+        cap = cv2.VideoCapture(camera_id)
+        if cap.isOpened():
+            available.append(camera_id)
+        cap.release()
+
+    return jsonify({'success': True, 'cameras': available, 'busy': False})
+
+
 @app.route('/start_camera', methods=['POST'])
 @login_required_api
 def start_camera():
@@ -135,6 +230,7 @@ def start_camera():
         success = video_analyzer.start_camera(camera_id)
 
         if success:
+            audit('camera_start', f'camera_id={camera_id}')
             return jsonify({
                 'success': True,
                 'message': 'Camera started successfully'
@@ -158,6 +254,7 @@ def stop_camera():
     """Stop camera feed"""
     try:
         video_analyzer.stop_camera()
+        audit('camera_stop')
         return jsonify({
             'success': True,
             'message': 'Camera stopped'
@@ -187,7 +284,11 @@ def get_analysis():
             'match_score': face.get('match_score', 0),
             'dominant_emotion': face.get('dominant_emotion', 'neutral'),
             'confidence': face.get('confidence', 0),
-            'emotion_scores': face.get('emotion_scores', {})
+            'emotion_scores': face.get('emotion_scores', {}),
+            'recognized_once': face.get('recognized_once', False),
+            'liveness_status': face.get('liveness_status', 'checking'),
+            'liveness_score': face.get('liveness_score'),
+            'liveness_progress': face.get('liveness_progress', 0)
         })
 
     # Calculate overall emotion distribution
@@ -200,6 +301,14 @@ def get_analysis():
         response['emotion_distribution'] = emotion_dist
     else:
         response['emotion_distribution'] = {e: 0 for e in ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']}
+
+    response['fps'] = current_analysis.get('fps', 0)
+    response['processing_ms'] = current_analysis.get('processing_ms', 0)
+    response['liveness_summary'] = {
+        'live': sum(1 for f in response['faces'] if f['liveness_status'] == 'live'),
+        'low_motion': sum(1 for f in response['faces'] if f['liveness_status'] == 'low_motion'),
+        'checking': sum(1 for f in response['faces'] if f['liveness_status'] == 'checking'),
+    }
 
     return jsonify(response)
 
@@ -335,6 +444,36 @@ def camera_status():
     })
 
 
+@app.route('/settings', methods=['GET'])
+@login_required_api
+def get_settings():
+    """Current runtime-adjustable settings"""
+    return jsonify({
+        'success': True,
+        'match_threshold': shared_recognizer.match_threshold,
+        'default_match_threshold': MATCH_THRESHOLD,
+    })
+
+
+@app.route('/settings', methods=['POST'])
+@login_required_api
+def update_settings():
+    """Adjust the recognition match-confidence threshold for this run (not persisted across restarts)"""
+    try:
+        threshold = float(request.json.get('match_threshold'))
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({'success': False, 'error': 'match_threshold must be a number'}), 400
+
+    # SFace's cosine similarity score is bounded to roughly this range in
+    # practice; clamp rather than trust the client blindly.
+    if not (0.0 <= threshold <= 1.0):
+        return jsonify({'success': False, 'error': 'match_threshold must be between 0 and 1'}), 400
+
+    shared_recognizer.match_threshold = threshold
+    logger.info(f"Match threshold changed to {threshold:.3f}")
+    return jsonify({'success': True, 'match_threshold': threshold})
+
+
 @app.route('/get_snapshots')
 @login_required_api
 def get_snapshots():
@@ -370,6 +509,24 @@ def media(filename):
     """Serve a saved snapshot/analyzed image (gated behind login)"""
     safe_filename = secure_filename(filename)
     return send_from_directory(MEDIA_FOLDER, safe_filename)
+
+
+@app.route('/media/<filename>', methods=['DELETE'])
+@login_required_api
+def delete_media(filename):
+    """Delete a saved snapshot/analyzed image"""
+    safe_filename = secure_filename(filename)
+    # Only ever delete files this app itself generated into MEDIA_FOLDER —
+    # same prefix check get_snapshots() uses to list them.
+    if not (safe_filename.startswith('snapshot_') or safe_filename.startswith('analyzed_')):
+        return jsonify({'success': False, 'error': 'Not a deletable file'}), 400
+
+    filepath = os.path.join(MEDIA_FOLDER, safe_filename)
+    if not os.path.isfile(filepath):
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    os.remove(filepath)
+    return jsonify({'success': True})
 
 
 @app.route('/people', methods=['GET'])
@@ -415,7 +572,14 @@ def add_person():
             return jsonify({'success': False, 'error': 'No valid image files provided'}), 400
 
         result = shared_recognizer.enroll_person(name, decoded_photos)
+        audit('person_enrolled', f"name={result['name']} photos={result['photos_enrolled']}")
         return jsonify({'success': True, **result})
+
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
 
     except Exception as e:
         return jsonify({
@@ -432,6 +596,7 @@ def delete_person(name):
         existed = shared_recognizer.delete_person(name)
         if not existed:
             return jsonify({'success': False, 'error': 'Person not found'}), 404
+        audit('person_deleted', f'name={name}')
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({
@@ -451,11 +616,41 @@ def person_photo(name, filename):
     return send_from_directory(person_dir, safe_filename)
 
 
+@app.route('/people/<name>/photos', methods=['GET'])
+@login_required_api
+def list_person_photos(name):
+    """List an enrolled person's individual photos, for the per-photo management UI"""
+    try:
+        return jsonify({'success': True, 'photos': shared_recognizer.get_photos(name)})
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/people/<name>/photos/<filename>', methods=['DELETE'])
+@login_required_api
+def delete_person_photo(name, filename):
+    """Remove a single enrolled photo (and its embedding) from a person"""
+    try:
+        result = shared_recognizer.delete_photo(name, filename)
+        if result is None:
+            return jsonify({'success': False, 'error': 'Photo not found'}), 404
+        audit('photo_deleted', f'name={name} person_removed={not result}')
+        return jsonify({'success': True, 'person_removed': not result})
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 if __name__ == '__main__':
     if not os.environ.get('FACE_AI_PASSWORD'):
-        print(
-            "WARNING: FACE_AI_PASSWORD is not set — no password will work "
-            "and login is impossible until you set it (see .env.example)."
+        logger.warning(
+            "FACE_AI_PASSWORD is not set — no password will work and login "
+            "is impossible until you set it (see .env.example)."
         )
 
     host = os.environ.get('FACE_AI_HOST', '127.0.0.1')
