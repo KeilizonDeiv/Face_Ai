@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Face Analysis System</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -11,6 +12,7 @@
         <!-- Header -->
         <header class="header">
             <form class="logout-form" method="POST" action="/logout">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="logout-btn">Logout</button>
             </form>
             <h1>🎭 AI Face Analysis System</h1>
@@ -36,10 +38,11 @@
                     </div>
                     
                     <div class="video-container">
-                        <img id="videoFeed" 
-                             src="/static/images/placeholder.jpg" 
+                        <img id="videoFeed"
+                             src="/static/images/placeholder.jpg"
                              alt="Camera Feed"
                              onerror="this.src='/static/images/placeholder.jpg'">
+                        <div class="scan-line" id="scanLine"></div>
                         <div class="video-overlay" id="noCamera">
                             <div class="overlay-content">
                                 <div class="overlay-icon">📷</div>
@@ -50,6 +53,7 @@
                     </div>
                     
                     <div class="video-controls">
+                        <select id="cameraSelect" class="camera-select" title="Camera to use"></select>
                         <button class="btn btn-primary" id="startBtn" onclick="startCamera()">
                             <span class="btn-icon">▶</span> Start Camera
                         </button>
@@ -93,6 +97,27 @@
                             <div class="stat-value" id="dominantEmotion">-</div>
                             <div class="stat-label">Dominant Emotion</div>
                         </div>
+                        <div class="stat-box">
+                            <div class="stat-icon">⚡</div>
+                            <div class="stat-value small" id="fpsValue">-</div>
+                            <div class="stat-label">FPS / Latency</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-icon">🛡️</div>
+                            <div class="stat-value small" id="livenessSummary">-</div>
+                            <div class="stat-label">Live / Flagged</div>
+                        </div>
+                    </div>
+                    <canvas id="emotionSparkline" class="emotion-sparkline" height="60"></canvas>
+                </div>
+
+                <!-- Recognition Settings -->
+                <div class="card">
+                    <h2>⚙️ Recognition Settings</h2>
+                    <div class="settings-row">
+                        <label for="thresholdSlider">Match confidence threshold: <span id="thresholdValue">0.363</span></label>
+                        <input type="range" id="thresholdSlider" min="0.1" max="0.8" step="0.01" value="0.363">
+                        <p class="empty-hint">Lower = more lenient matches (more false positives). Higher = stricter (more "Unknown").</p>
                     </div>
                 </div>
 
@@ -173,9 +198,10 @@
                         </div>
                     </div>
                     <form class="add-person-form" id="addPersonForm">
-                        <input type="text" id="personName" placeholder="Person's name" required>
+                        <input type="text" id="personName" placeholder="Person's name" list="enrolledNamesList" autocomplete="off" required>
+                        <datalist id="enrolledNamesList"></datalist>
                         <input type="file" id="personPhotos" accept="image/*" multiple required>
-                        <button type="submit" class="btn btn-primary">
+                        <button type="submit" class="btn btn-primary" id="addPersonSubmitBtn">
                             <span class="btn-icon">➕</span> Add Person
                         </button>
                     </form>
@@ -216,8 +242,29 @@
 
     <!-- Loading Overlay -->
     <div id="loadingOverlay" class="loading-overlay" style="display: none;">
-        <div class="spinner"></div>
-        <p>Processing...</p>
+        <div class="scan-frame">
+            <div class="scan-frame-sweep"></div>
+        </div>
+        <p id="loadingMessage">Processing...</p>
+    </div>
+
+    <!-- Photo Manager Modal -->
+    <div id="photoManagerModal" class="modal-overlay" style="display: none;" onclick="if(event.target===this) closePhotoManager()">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h3 id="photoManagerTitle">Photos</h3>
+                <button class="modal-close-btn" onclick="closePhotoManager()">&times;</button>
+            </div>
+            <div class="photo-manager-grid" id="photoManagerGrid"></div>
+        </div>
+    </div>
+
+    <!-- Snapshot Lightbox -->
+    <div id="lightboxModal" class="modal-overlay" style="display: none;" onclick="if(event.target===this) closeLightbox()">
+        <button class="lightbox-nav lightbox-prev" onclick="navigateLightbox(-1)">&#10094;</button>
+        <img id="lightboxImage" class="lightbox-image" alt="Snapshot">
+        <button class="lightbox-nav lightbox-next" onclick="navigateLightbox(1)">&#10095;</button>
+        <button class="modal-close-btn lightbox-close" onclick="closeLightbox()">&times;</button>
     </div>
 
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
