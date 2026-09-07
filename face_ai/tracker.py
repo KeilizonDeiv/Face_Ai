@@ -7,7 +7,17 @@ matching new detections to existing tracks using intersection-over-union
 enumeration order every single frame.
 """
 
-from typing import Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Dict, List, Optional, Tuple
+
+# Number of frame-to-frame motion samples averaged into a liveness verdict,
+# and the mean-pixel-diff (0-255 grayscale scale) below which a face is
+# flagged as suspiciously static (e.g. a printed photo held up to the
+# camera). This is a lightweight heuristic, not real anti-spoofing — it
+# only catches the "perfectly still photo" case, not a replayed video or a
+# photo someone is subtly moving.
+LIVENESS_HISTORY_LEN = 30
+LIVENESS_MOTION_THRESHOLD = 1.5
 
 
 def _iou(box_a: Tuple[int, int, int, int], box_b: Tuple[int, int, int, int]) -> float:
@@ -53,11 +63,32 @@ class Track:
         self.emotion_scores: Dict[str, float] = {}
         self.last_recognized_frame: int = -1
 
+        # Liveness bookkeeping (see push_liveness_sample). The thumbnail is
+        # an opaque small grayscale crop from the previous frame — this
+        # module stays free of an OpenCV/numpy dependency and just holds
+        # whatever face_analyzer.py hands it.
+        self.liveness_history: "deque[float]" = deque(maxlen=LIVENESS_HISTORY_LEN)
+        self.liveness_prev_thumb: Optional[Any] = None
+        self.liveness_score: Optional[float] = None
+        self.liveness_status: str = 'checking'  # 'checking' | 'live' | 'low_motion'
+
     def update_box(self, box: Tuple[int, int, int, int], detection_index: int):
         self.box = box
         self.detection_index = detection_index
         self.hits += 1
         self.frames_since_seen = 0
+
+    def push_liveness_sample(self, motion: float):
+        """Record one frame-to-frame motion sample; classify live/low_motion once enough have accumulated."""
+        self.liveness_history.append(motion)
+        if len(self.liveness_history) >= LIVENESS_HISTORY_LEN:
+            self.liveness_score = sum(self.liveness_history) / len(self.liveness_history)
+            self.liveness_status = 'live' if self.liveness_score >= LIVENESS_MOTION_THRESHOLD else 'low_motion'
+
+    @property
+    def liveness_progress(self) -> float:
+        """Fraction (0-1) of the way through collecting enough samples for a liveness verdict."""
+        return min(1.0, len(self.liveness_history) / LIVENESS_HISTORY_LEN)
 
 
 class IOUTracker:
