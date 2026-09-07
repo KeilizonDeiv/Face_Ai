@@ -5,7 +5,9 @@ Uses open-source models for face detection, emotion recognition, and analysis
 
 import cv2
 import numpy as np
+from collections import deque
 from deepface import DeepFace
+import logging
 import os
 import threading
 import time
@@ -16,6 +18,7 @@ warnings.filterwarnings('ignore')
 from tracker import IOUTracker
 from face_recognizer import FaceRecognizer
 
+logger = logging.getLogger('face_ai')
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
 YUNET_MODEL_PATH = os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx')
@@ -23,6 +26,54 @@ YUNET_MODEL_PATH = os.path.join(MODELS_DIR, 'face_detection_yunet_2023mar.onnx')
 # How often (in frames) a track's name/emotion gets refreshed once it has
 # one. New tracks are always recognized immediately on their first frame.
 RECOGNIZE_EVERY_N_FRAMES = 12
+
+# Fixed size a face crop is downscaled to before diffing against the
+# previous frame's crop, for the motion-based liveness heuristic.
+LIVENESS_THUMB_SIZE = (24, 24)
+
+
+def _liveness_thumbnail(frame: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
+    """Small grayscale crop of a face box, for frame-to-frame motion diffing."""
+    x, y, w, h = box
+    if w <= 0 or h <= 0:
+        return None
+    crop = frame[y:y + h, x:x + w]
+    if crop.size == 0:
+        return None
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(gray, LIVENESS_THUMB_SIZE)
+
+
+def _draw_scanner_corners(img: np.ndarray, box: Tuple[int, int, int, int], color, thickness: int = 2):
+    """Draw a camera/scanner-style bracket (open corners) around a face box instead of a full rectangle."""
+    x, y, w, h = box
+    corner_len = max(12, int(min(w, h) * 0.22))
+
+    for cx, cy, dx, dy in (
+        (x, y, 1, 1),              # top-left
+        (x + w, y, -1, 1),         # top-right
+        (x, y + h, 1, -1),         # bottom-left
+        (x + w, y + h, -1, -1),    # bottom-right
+    ):
+        cv2.line(img, (cx, cy), (cx + dx * corner_len, cy), color, thickness)
+        cv2.line(img, (cx, cy), (cx, cy + dy * corner_len), color, thickness)
+
+
+def _draw_scan_sweep(img: np.ndarray, box: Tuple[int, int, int, int], color, frame_count: int):
+    """
+    Draw a horizontal line sweeping up and down inside a face box, to make
+    it visually obvious the system is actively scanning this face (as
+    opposed to having already identified it).
+    """
+    x, y, w, h = box
+    period = 24  # frames for one full sweep up-and-back-down
+    phase = (frame_count % period) / period
+    sweep_frac = 1 - abs(2 * phase - 1)  # triangle wave: 0 -> 1 -> 0
+    scan_y = y + int(sweep_frac * h)
+
+    overlay = img.copy()
+    cv2.line(overlay, (x, scan_y), (x + w, scan_y), color, 3)
+    cv2.addWeighted(overlay, 0.6, img, 0.4, 0, dst=img)
 
 
 class FaceAnalyzer:
@@ -62,7 +113,7 @@ class FaceAnalyzer:
             'neutral': (200, 200, 200)  # Gray
         }
         
-        print("Face analyzer initialized")
+        logger.info("Face analyzer initialized")
     
     def detect_faces_raw(self, image: np.ndarray) -> np.ndarray:
         """
@@ -214,34 +265,47 @@ class FaceAnalyzer:
             analysis['face_id'] = i + 1
             analysis['name'] = name
             analysis['match_score'] = match_score
+            # A single still image has no frame history to measure motion
+            # against, so the liveness heuristic (video-only) can't run here.
+            analysis['liveness_status'] = 'unavailable'
             results['faces'].append(analysis)
         
         return results
     
-    def draw_analysis(self, image: np.ndarray, analysis: Dict) -> np.ndarray:
+    def draw_analysis(self, image: np.ndarray, analysis: Dict, frame_count: Optional[int] = None) -> np.ndarray:
         """
-        Draw analysis results on image
-        
+        Draw analysis results on image.
+
         Args:
             image: Input image
             analysis: Analysis results
-            
+            frame_count: current video frame number, used to animate the
+                scanning sweep on not-yet-identified tracks. Omit for a
+                single still image (no animation, just a static frame).
+
         Returns:
             Image with drawn annotations
         """
         output = image.copy()
-        
+
         for face in analysis['faces']:
             x, y, w, h = face['box']
             emotion = face['dominant_emotion']
             confidence = face['confidence']
-            
+
             # Get color for emotion
             color = self.emotion_colors.get(emotion, (255, 255, 255))
-            
-            # Draw bounding box
-            cv2.rectangle(output, (x, y), (x + w, y + h), color, 2)
-            
+
+            still_scanning = 'track_id' in face and not face.get('recognized_once')
+
+            # Camera-viewfinder-style corner brackets instead of a full
+            # rectangle, plus an animated sweep line while a track hasn't
+            # been identified yet — makes it visually obvious the system is
+            # actively working on this face rather than idling.
+            _draw_scanner_corners(output, (x, y, w, h), color, thickness=2)
+            if still_scanning and frame_count is not None:
+                _draw_scan_sweep(output, (x, y, w, h), color, frame_count)
+
             # Draw label background
             label = f"{emotion} ({confidence:.1f}%)"
             (label_w, label_h), _ = cv2.getTextSize(
@@ -267,14 +331,15 @@ class FaceAnalyzer:
                 2
             )
             
-            # Draw identity label: recognized name takes priority over the
-            # bare face/track number, "Unknown" if recognition ran and found
-            # nobody, or just the number if recognition hasn't run yet.
+            # Draw identity label: recognized name takes priority, "UNKNOWN"
+            # if recognition ran and found nobody, "SCANNING..." while the
+            # first recognition pass on this track hasn't completed yet.
+            # (Plain ASCII — cv2's built-in fonts can't render unicode/emoji.)
             name = face.get('name')
             if name:
-                id_label = f"{name} ({face.get('match_score', 0):.2f})"
+                id_label = f"MATCH: {name} ({face.get('match_score', 0):.2f})"
             elif 'track_id' in face:
-                id_label = "Unknown" if face.get('recognized_once') else f"Track {face['track_id']}"
+                id_label = "UNKNOWN" if face.get('recognized_once') else "SCANNING..."
             else:
                 id_label = f"Face {face['face_id']}"
 
@@ -287,7 +352,20 @@ class FaceAnalyzer:
                 color,
                 1
             )
-        
+
+            # Flag tracks the liveness heuristic thinks are suspiciously
+            # static (e.g. a printed photo held up to the camera).
+            if face.get('liveness_status') == 'low_motion':
+                cv2.putText(
+                    output,
+                    "possible spoof (no motion)",
+                    (x, y + h + 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 140, 255),
+                    2
+                )
+
         # Draw summary
         summary_text = f"Faces Detected: {analysis['num_faces']}"
         cv2.putText(
@@ -357,6 +435,11 @@ class VideoAnalyzer:
         self._capture_thread: Optional[threading.Thread] = None
         self._inference_thread: Optional[threading.Thread] = None
 
+        # Rolling perf stats surfaced to the dashboard (see _inference_loop).
+        self._frame_times: "deque[float]" = deque(maxlen=30)
+        self._fps: float = 0.0
+        self._last_process_ms: float = 0.0
+
     def start_camera(self, camera_id: int = 0) -> bool:
         """Start camera capture and the background processing threads"""
         try:
@@ -372,6 +455,9 @@ class VideoAnalyzer:
 
             self.tracker.reset()
             self.frame_count = 0
+            self._frame_times.clear()
+            self._fps = 0.0
+            self._last_process_ms = 0.0
             with self._raw_frame_lock:
                 self._raw_frame = None
             with self._result_lock:
@@ -385,11 +471,11 @@ class VideoAnalyzer:
             self._capture_thread.start()
             self._inference_thread.start()
 
-            print("Camera started")
+            logger.info("Camera started")
             return True
 
         except Exception as e:
-            print(f"Camera start failed: {e}")
+            logger.error(f"Camera start failed: {e}")
             return False
 
     def stop_camera(self):
@@ -407,7 +493,7 @@ class VideoAnalyzer:
             self.cap.release()
             self.cap = None
 
-        print("Camera stopped")
+        logger.info("Camera stopped")
 
     def _capture_loop(self):
         """Continuously read camera frames as fast as the camera allows"""
@@ -435,7 +521,18 @@ class VideoAnalyzer:
                 continue
 
             self.frame_count += 1
+            t0 = time.time()
             annotated_frame, analysis = self._process_frame(frame)
+            t1 = time.time()
+
+            self._last_process_ms = (t1 - t0) * 1000
+            self._frame_times.append(t1)
+            if len(self._frame_times) >= 2:
+                span = self._frame_times[-1] - self._frame_times[0]
+                self._fps = (len(self._frame_times) - 1) / span if span > 0 else 0.0
+
+            analysis['fps'] = round(self._fps, 1)
+            analysis['processing_ms'] = round(self._last_process_ms, 1)
 
             with self._result_lock:
                 self._annotated_frame = annotated_frame
@@ -460,6 +557,16 @@ class VideoAnalyzer:
         for track in tracks:
             if track.detection_index is None:
                 continue  # coasting on its last known box this frame
+
+            # Liveness motion sample: computed every frame a track has a
+            # fresh detection (not throttled like recognition/emotion,
+            # since it needs frame-to-frame resolution to measure motion).
+            thumb = _liveness_thumbnail(frame, track.box)
+            if thumb is not None:
+                if track.liveness_prev_thumb is not None:
+                    motion = float(np.mean(cv2.absdiff(thumb, track.liveness_prev_thumb)))
+                    track.push_liveness_sample(motion)
+                track.liveness_prev_thumb = thumb
 
             due_for_refresh = (
                 track.last_recognized_frame == -1
@@ -489,6 +596,9 @@ class VideoAnalyzer:
                 'name': track.name,
                 'match_score': track.match_score,
                 'recognized_once': track.last_recognized_frame != -1,
+                'liveness_status': track.liveness_status,
+                'liveness_score': track.liveness_score,
+                'liveness_progress': track.liveness_progress,
             }
             for track in tracks
         ]
@@ -499,7 +609,7 @@ class VideoAnalyzer:
             'image_shape': frame.shape,
         }
 
-        annotated_frame = self.face_analyzer.draw_analysis(frame, analysis)
+        annotated_frame = self.face_analyzer.draw_analysis(frame, analysis, frame_count=self.frame_count)
         return annotated_frame, analysis
 
     def get_frame(self) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
@@ -528,7 +638,7 @@ class VideoAnalyzer:
             cv2.imwrite(filepath, frame)
             return True
         except Exception as e:
-            print(f"Save failed: {e}")
+            logger.error(f"Save failed: {e}")
             return False
 
 
