@@ -168,6 +168,28 @@ h2 {
     object-fit: contain;
 }
 
+/* Ambient "AI is scanning" cue: a soft glowing bar sweeping the feed.
+   Sits between the video image and the "camera not active" overlay in DOM
+   order, so the overlay naturally covers it while the camera is off. */
+.scan-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, #4ade80, transparent);
+    box-shadow: 0 0 12px 2px rgba(74, 222, 128, 0.7);
+    animation: scan-sweep 3.5s ease-in-out infinite;
+    pointer-events: none;
+}
+
+@keyframes scan-sweep {
+    0%   { top: 0%; opacity: 0; }
+    5%   { opacity: 1; }
+    50%  { top: 100%; }
+    95%  { opacity: 1; }
+    100% { top: 0%; opacity: 0; }
+}
+
 .video-overlay {
     position: absolute;
     top: 0;
@@ -205,6 +227,15 @@ h2 {
     gap: 10px;
     padding: 20px;
     background: #f9fafb;
+}
+
+.camera-select {
+    padding: 0 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    font-size: 0.9em;
+    background: white;
+    color: #1f2937;
 }
 
 /* Buttons */
@@ -300,6 +331,19 @@ h2 {
     margin-top: 15px;
 }
 
+/* Recognition Settings */
+.settings-row label {
+    display: block;
+    font-size: 0.9em;
+    font-weight: 600;
+    color: #1f2937;
+    margin-bottom: 8px;
+}
+
+.settings-row input[type="range"] {
+    width: 100%;
+}
+
 /* Stats */
 .stats-grid {
     display: grid;
@@ -324,6 +368,17 @@ h2 {
     font-size: 2.5em;
     font-weight: bold;
     margin-bottom: 5px;
+}
+
+.stat-value.small {
+    font-size: 1.3em;
+}
+
+.emotion-sparkline {
+    width: 100%;
+    height: 60px;
+    margin-top: 15px;
+    display: block;
 }
 
 .stat-label {
@@ -413,6 +468,29 @@ h2 {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    border-left: 4px solid transparent;
+    transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+/* Still being identified: subtle pulsing left edge */
+.face-item.scanning {
+    border-left-color: #60a5fa;
+    animation: scanning-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes scanning-pulse {
+    0%, 100% { background: #f7fafc; }
+    50% { background: #eff6ff; }
+}
+
+/* One-shot flash the exact moment a scan resolves to a result */
+.face-item.just-matched {
+    animation: match-flash 1s ease-out;
+}
+
+@keyframes match-flash {
+    0%   { background: #d1fae5; border-left-color: #10b981; }
+    100% { background: #f7fafc; border-left-color: transparent; }
 }
 
 .face-info {
@@ -459,6 +537,27 @@ h2 {
     color: #4b5563;
 }
 
+.identity-badge.spoof-warning {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
+.identity-badge.scanning {
+    background: #dbeafe;
+    color: #1e40af;
+    animation: badge-pulse 1.4s ease-in-out infinite;
+}
+
+.identity-badge.checking {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+@keyframes badge-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
+
 /* Enrolled People panel */
 .people-grid {
     display: grid;
@@ -497,21 +596,155 @@ h2 {
     margin-top: 2px;
 }
 
-.person-delete-btn {
+.person-last-seen {
+    font-size: 0.7em;
+    color: #a0aec0;
+    margin-top: 2px;
+}
+
+.person-card-actions {
+    display: flex;
+    gap: 6px;
     margin-top: 8px;
+}
+
+.person-manage-btn,
+.person-delete-btn {
     padding: 4px 10px;
-    background: #fee2e2;
-    color: #991b1b;
     border: none;
     border-radius: 8px;
     font-size: 0.75em;
     font-weight: 600;
     cursor: pointer;
-    width: 100%;
+    flex: 1;
+}
+
+.person-manage-btn {
+    background: #e0e7ff;
+    color: #3730a3;
+}
+
+.person-manage-btn:hover {
+    background: #c7d2fe;
+}
+
+.person-delete-btn {
+    background: #fee2e2;
+    color: #991b1b;
 }
 
 .person-delete-btn:hover {
     background: #fecaca;
+}
+
+/* Modal shell shared by the photo manager and snapshot lightbox */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.modal-box {
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.modal-close-btn {
+    background: none;
+    border: none;
+    font-size: 1.8em;
+    line-height: 1;
+    cursor: pointer;
+    color: #718096;
+}
+
+.modal-close-btn:hover {
+    color: #1f2937;
+}
+
+.photo-manager-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 10px;
+    overflow-y: auto;
+}
+
+.photo-manager-item {
+    position: relative;
+}
+
+.photo-manager-item img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 8px;
+    background: #e2e8f0;
+}
+
+.photo-delete-btn {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #ef4444;
+    color: white;
+    border: 2px solid white;
+    cursor: pointer;
+    font-size: 0.9em;
+    line-height: 1;
+}
+
+.photo-delete-btn:hover {
+    background: #dc2626;
+}
+
+/* Snapshot lightbox */
+.lightbox-image {
+    max-width: 85vw;
+    max-height: 85vh;
+    border-radius: 8px;
+}
+
+.lightbox-nav {
+    background: rgba(255, 255, 255, 0.15);
+    border: none;
+    color: white;
+    font-size: 1.5em;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    cursor: pointer;
+    margin: 0 20px;
+}
+
+.lightbox-nav:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.lightbox-close {
+    position: absolute;
+    top: 20px;
+    right: 30px;
+    color: white;
 }
 
 .add-person-form {
@@ -551,6 +784,31 @@ h2 {
     width: 100%;
     height: 100%;
     object-fit: cover;
+}
+
+.snapshot-delete-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9em;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.snapshot-item:hover .snapshot-delete-btn {
+    opacity: 1;
+}
+
+.snapshot-delete-btn:hover {
+    background: #ef4444;
 }
 
 /* Empty State */
@@ -643,6 +901,51 @@ h2 {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+/* Scanner-frame loading indicator: open corner brackets (echoing the
+   video feed's face-scan overlay) with a bar sweeping between them, so
+   uploads/enrollment read as "scanning" rather than a generic spinner. */
+.scan-frame {
+    position: relative;
+    width: 90px;
+    height: 90px;
+    margin-bottom: 20px;
+}
+
+/* Two opposite corner brackets (top-left / bottom-right) are enough to read
+   as a "scanner frame" and keep this to the two pseudo-elements a single
+   element gets — the sweep bar below is a separate, independently
+   animated child. */
+.scan-frame::before,
+.scan-frame::after {
+    content: '';
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    border: 3px solid #4ade80;
+}
+
+.scan-frame::before {
+    top: 0; left: 0;
+    border-right: none;
+    border-bottom: none;
+}
+
+.scan-frame::after {
+    bottom: 0; right: 0;
+    border-left: none;
+    border-top: none;
+}
+
+.scan-frame-sweep {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: #4ade80;
+    box-shadow: 0 0 10px 2px rgba(74, 222, 128, 0.8);
+    animation: scan-sweep 1.4s ease-in-out infinite;
 }
 
 /* Scrollbar */
