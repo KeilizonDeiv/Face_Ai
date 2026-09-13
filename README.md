@@ -15,6 +15,8 @@ This advanced AI system demonstrates state-of-the-art computer vision techniques
 - ✅ Snapshot capture and save
 - ✅ Image upload and batch analysis
 - ✅ Login-gated dashboard, upload validation, secure media serving
+- ✅ CSRF-protected forms/API calls and rate-limited login to resist brute-forcing
+- ✅ Heuristic liveness check (frame-to-frame motion) flags a suspiciously static face, e.g. a printed photo held to the camera
 - ✅ 100% offline - works without internet after a one-time model download
 - ✅ No API keys or paid services required
 - ✅ Privacy-focused - all processing on your device
@@ -63,12 +65,14 @@ This advanced AI system demonstrates state-of-the-art computer vision techniques
 ```
 face_ai/
 ├── app.py                    # Flask application, routes, auth wiring
-├── face_analyzer.py          # Detection + tracking + recognition + emotion pipeline
+├── serve.py                  # Production entrypoint (waitress instead of the dev server)
+├── face_analyzer.py          # Detection + tracking + recognition + emotion + liveness pipeline
 ├── tracker.py                # IOU-based multi-face tracker
 ├── face_recognizer.py        # Enrollment/recognition (SFace embeddings)
-├── auth.py                   # Session-based login gate
+├── auth.py                   # Session login gate, CSRF tokens, login rate limiting
 ├── download_models.py        # One-time fetch of YuNet/SFace ONNX weights
 ├── requirements.txt          # Python dependencies
+├── Dockerfile / .dockerignore # Container build for production deployment
 ├── .env.example              # Template for FACE_AI_PASSWORD etc. (copy to .env)
 ├── README.md                # Documentation
 ├── models/                  # Downloaded ONNX weights (git-ignored)
@@ -139,6 +143,31 @@ python app.py
 Navigate to `http://localhost:5000` and sign in with the password you set
 
 8. **Grant camera access when prompted**
+
+## 🏭 Production Deployment
+
+`python app.py` runs Flask's built-in dev server, which isn't designed for
+concurrent connections or untrusted exposure. For anything beyond local
+single-user use:
+
+1. **Use the waitress entrypoint instead of the dev server:**
+```bash
+python serve.py
+```
+
+2. **Put it behind a TLS-terminating reverse proxy** (nginx, Caddy, etc.) if
+it needs to be reachable beyond `127.0.0.1`, and set `FACE_AI_HTTPS=1` in
+`.env` so session cookies get the `Secure` flag.
+
+3. **Or run it in Docker:**
+```bash
+docker build -t face-ai .
+docker run -p 5000:5000 --env-file .env face-ai
+```
+Note: webcam access from inside a container only works with device
+passthrough on Linux hosts (`--device=/dev/video0`); on Docker Desktop
+(Windows/Mac) the container can't see a physical webcam, so the image
+upload / analyze-image flow is what you'd exercise there.
 
 ## 💻 How to Use
 
